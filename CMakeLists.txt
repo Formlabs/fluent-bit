@@ -93,6 +93,7 @@ option(FLB_PROXY_GO           "Enable Go plugins support"   Yes)
 
 # Build-in Plugins
 option(FLB_IN_CPU             "Enable CPU input plugin"            Yes)
+option(FLB_IN_DBUS            "Enable DBus input plugin"           Yes)
 option(FLB_IN_DISK            "Enable Disk input plugin"           Yes)
 option(FLB_IN_EXEC            "Enable Exec input plugin"           Yes)
 option(FLB_IN_FORWARD         "Enable Forward input plugin"        Yes)
@@ -155,6 +156,7 @@ if(FLB_ALL)
 
   # Input plugins
   set(FLB_IN_CPU       1)
+  set(FLB_IN_DBUS      1)
   set(FLB_IN_MEM       1)
   set(FLB_IN_KMSG      1)
   set(FLB_IN_MQTT      1)
