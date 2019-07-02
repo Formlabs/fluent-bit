@@ -387,7 +387,7 @@ static void* in_dbus_worker(void *in_context)
         dbus_message_unref(msg);
     }
 
-    dbus_connection_close(conn);
+    dbus_connection_unref(conn);
     return NULL;
 }
 
