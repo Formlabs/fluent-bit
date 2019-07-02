@@ -91,8 +91,14 @@ static void in_dbus_introspect(struct flb_in_dbus_config *dbus_config,
         "<node>"
         "    <interface name=\"com.fluent.fluentbit\">"
         "        <method name=\"LogData\">"
-        "            <arg type=\"a{sv}\" direction=\"in\"/>"
+        "            <arg name=\"data\" type=\"a{sv}\" direction=\"in\"/>"
         "            <annotation name=\"org.qtproject.QtDBus.QtTypeName.In0\" value=\"QVariantMap\"/>"
+        "        </method>"
+        "        <method name=\"LogTimestampedData\">"
+        "            <arg name=\"tv_sec\" type=\"x\" direction=\"in\"/>"
+        "            <arg name=\"tv_ns\" type=\"x\" direction=\"in\"/>"
+        "            <arg name=\"data\" type=\"a{sv}\" direction=\"in\"/>"
+        "            <annotation name=\"org.qtproject.QtDBus.QtTypeName.In2\" value=\"QVariantMap\"/>"
         "        </method>"
         "    </interface>"
         "</node>";
@@ -113,28 +119,23 @@ static void in_dbus_introspect(struct flb_in_dbus_config *dbus_config,
     dbus_message_unref(reply);
 }
 
-static void in_dbus_log_data(struct flb_in_dbus_config *dbus_config,
-                             DBusMessage* msg, DBusConnection* conn)
+static void in_dbus_log_dict(struct flb_in_dbus_config *dbus_config,
+                             struct flb_time *out_time,
+                             DBusMessage *msg,
+                             DBusMessageIter *args,
+                             DBusConnection *conn)
 {
-    DBusMessageIter args;
     DBusMessageIter dict;
     DBusMessage* reply;
     dbus_uint32_t serial = 0;
-    struct flb_time out_time;
 
-    flb_time_get(&out_time);
-
-    /* read the arguments, returning immediately if they're invalid */
-    if (!dbus_message_iter_init(msg, &args)) {
-        flb_error("[in_dbus] Message has no arguments");
-        in_dbus_reply_error(msg, conn, "Method call has no arguments");
-        return;
-    }
-    else if (DBUS_TYPE_ARRAY != dbus_message_iter_get_arg_type(&args)) {
+    /*  Make sure that we're at the right part of the message */
+    if (DBUS_TYPE_ARRAY != dbus_message_iter_get_arg_type(args)) {
         flb_error("[in_dbus] Message is not a dictionary");
         in_dbus_reply_error(msg, conn, "Method call has invalid arguments");
         return;
     }
+
 
     /*  Initialize the msgpack buffer if it's empty */
     pthread_mutex_lock(&dbus_config->mut);
@@ -146,19 +147,18 @@ static void in_dbus_log_data(struct flb_in_dbus_config *dbus_config,
 
     /*  Write the time for this sample */
     msgpack_pack_array(&dbus_config->mp_pck, 2);
-    flb_time_append_to_msgpack(&out_time, &dbus_config->mp_pck, 0);
+    flb_time_append_to_msgpack(out_time, &dbus_config->mp_pck, 0);
 
-    {   /*  Count up arguments, and record this in the pack */
-        unsigned count = 0;
-        dbus_message_iter_recurse(&args, &dict);
-        while (dbus_message_iter_get_arg_type(&dict) != DBUS_TYPE_INVALID) {
-            count++;
-            dbus_message_iter_next(&dict);
-        }
-        msgpack_pack_map(&dbus_config->mp_pck, count);
+    /*  Count up arguments, and record this in the pack */
+    unsigned count = 0;
+    dbus_message_iter_recurse(args, &dict);
+    while (dbus_message_iter_get_arg_type(&dict) != DBUS_TYPE_INVALID) {
+        count++;
+        dbus_message_iter_next(&dict);
     }
+    msgpack_pack_map(&dbus_config->mp_pck, count);
 
-    dbus_message_iter_recurse(&args, &dict);
+    dbus_message_iter_recurse(args, &dict);
     while (dbus_message_iter_get_arg_type(&dict) != DBUS_TYPE_INVALID) {
         DBusMessageIter entry;
         DBusMessageIter variant;
@@ -268,6 +268,59 @@ static void in_dbus_log_data(struct flb_in_dbus_config *dbus_config,
     dbus_message_unref(reply);
 }
 
+static void in_dbus_log_data(struct flb_in_dbus_config *dbus_config,
+                             DBusMessage* msg, DBusConnection* conn)
+{
+    DBusMessageIter args;
+
+    struct flb_time out_time;
+    flb_time_get(&out_time);
+
+    /* read the arguments, returning immediately if they're invalid */
+    if (!dbus_message_iter_init(msg, &args)) {
+        flb_error("[in_dbus] Message has no arguments");
+        in_dbus_reply_error(msg, conn, "Method call has no arguments");
+        return;
+    }
+    in_dbus_log_dict(dbus_config, &out_time, msg, &args, conn);
+}
+
+static void in_dbus_log_timestamped_data(
+        struct flb_in_dbus_config *dbus_config,
+        DBusMessage* msg, DBusConnection* conn)
+{
+    DBusMessageIter args;
+    struct flb_time out_time;
+    int64_t x;
+
+    /* read the arguments, returning immediately if they're invalid */
+    if (!dbus_message_iter_init(msg, &args)) {
+        flb_error("[in_dbus] Message has no arguments");
+        in_dbus_reply_error(msg, conn, "Method call has no arguments");
+        return;
+    }
+
+    if (dbus_message_iter_get_arg_type(&args) != DBUS_TYPE_INT64) {
+        flb_error("[in_dbus] Expected int64 for tv_sec");
+        in_dbus_reply_error(msg, conn, "Expected int64 for tv_sec");
+        return;
+    }
+    dbus_message_iter_get_basic(&args, &x);
+    out_time.tm.tv_sec = x;
+    dbus_message_iter_next(&args);
+
+    if (dbus_message_iter_get_arg_type(&args) != DBUS_TYPE_INT64) {
+        flb_error("[in_dbus] Expected int64 for tv_nsec");
+        in_dbus_reply_error(msg, conn, "Expected int64 for tv_nsec");
+        return;
+    }
+    dbus_message_iter_get_basic(&args, &x);
+    out_time.tm.tv_nsec = x;
+    dbus_message_iter_next(&args);
+
+    in_dbus_log_dict(dbus_config, &out_time, msg, &args, conn);
+}
+
 static void* in_dbus_worker(void *in_context)
 {
     struct flb_in_dbus_config *dbus_config = in_context;
@@ -326,6 +379,9 @@ static void* in_dbus_worker(void *in_context)
         }
         else if (dbus_message_is_method_call(msg, iface, "LogData")) {
             in_dbus_log_data(dbus_config, msg, conn);
+        }
+        else if (dbus_message_is_method_call(msg, iface, "LogTimestampedData")) {
+            in_dbus_log_timestamped_data(dbus_config, msg, conn);
         }
 
         dbus_message_unref(msg);
