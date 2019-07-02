@@ -22,8 +22,6 @@
 
 #include <fluent-bit/flb_input.h>
 
-#include <dbus/dbus.h>
-
 #include <msgpack.h>
 #include <pthread.h>
 

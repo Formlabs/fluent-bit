@@ -132,7 +132,6 @@ static void in_dbus_log_data(struct flb_in_dbus_config *dbus_config,
     }
     else if (DBUS_TYPE_ARRAY != dbus_message_iter_get_arg_type(&args)) {
         flb_error("[in_dbus] Message is not a dictionary");
-        flb_error("%i", dbus_message_iter_get_arg_type(&args));
         in_dbus_reply_error(msg, conn, "Method call has invalid arguments");
         return;
     }
@@ -283,11 +282,11 @@ static void* in_dbus_worker(void *in_context)
     dbus_error_init(&err);
     conn = dbus_bus_get(dbus_config->dbus_bus, &err);
     if (dbus_error_is_set(&err)) {
-        flb_error("DBus connection Error (%s)", err.message);
+        flb_error("[in_dbus] DBus connection Error (%s)", err.message);
         dbus_error_free(&err);
     }
     if (NULL == conn) {
-        flb_error("DBus error: connection is NULL");
+        flb_error("[in_dbus] DBus error: connection is NULL");
         return NULL;
     }
 
@@ -295,11 +294,11 @@ static void* in_dbus_worker(void *in_context)
     ret = dbus_bus_request_name(conn, dbus_config->dbus_name,
                                 DBUS_NAME_FLAG_REPLACE_EXISTING, &err);
     if (dbus_error_is_set(&err)) {
-        flb_error("DBus name error (%s)", err.message);
+        flb_error("[in_dbus] DBus name error (%s)", err.message);
         dbus_error_free(&err);
     }
     if (DBUS_REQUEST_NAME_REPLY_PRIMARY_OWNER != ret) {
-        flb_error("DBus error: not Primary Owner (%d)\n", ret);
+        flb_error("[in_dbus] DBus error: not Primary Owner (%d)\n", ret);
         return NULL;
     }
 
@@ -394,7 +393,7 @@ static int in_dbus_init(struct flb_input_instance *in,
     /* Fill the entire config with zeros to start */
     memset(dbus_config, 0, sizeof(struct flb_in_dbus_config));
     if (pthread_mutex_init(&dbus_config->mut, NULL)) {
-        flb_error("could not create mutex");
+        flb_error("[in_dbus] could not create mutex");
         flb_free(dbus_config);
         return -1;
     }
@@ -410,7 +409,7 @@ static int in_dbus_init(struct flb_input_instance *in,
 
     /* Start the worker thread running */
     if (pthread_create(&config->worker, NULL, in_dbus_worker, dbus_config)) {
-        flb_error("could not create worker thread");
+        flb_error("[in_dbus] could not create worker thread");
         delete_dbus_config(dbus_config);
         return -1;
     }
@@ -420,7 +419,7 @@ static int in_dbus_init(struct flb_input_instance *in,
                                        in_dbus_collect,
                                        1, 0, config);
     if (ret < 0) {
-        flb_error("could not set collector for dbus input plugin");
+        flb_error("[in_dbus] could not set collector for dbus input plugin");
         delete_dbus_config(dbus_config);
         return -1;
     }
