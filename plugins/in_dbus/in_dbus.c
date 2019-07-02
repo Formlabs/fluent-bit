@@ -89,7 +89,8 @@ static void in_dbus_introspect(struct flb_in_dbus_config *dbus_config,
         "<node>"
         "    <interface name=\"com.fluent.fluentbit\">"
         "        <method name=\"LogData\">"
-        "            <arg type=\"{sv}\" direction=\"in\"/>"
+        "            <arg type=\"a{sv}\" direction=\"in\"/>"
+        "            <annotation name=\"org.qtproject.QtDBus.QtTypeName.In0\" value=\"QVariantMap\"/>"
         "        </method>"
         "    </interface>"
         "</node>";
@@ -112,7 +113,7 @@ static void in_dbus_log_data(struct flb_in_dbus_config *dbus_config,
                              DBusMessage* msg, DBusConnection* conn)
 {
     DBusMessageIter args;
-    char* key = "";
+    DBusMessageIter dict;
     DBusMessage* reply;
     dbus_uint32_t serial = 0;
     struct flb_time out_time;
@@ -124,8 +125,9 @@ static void in_dbus_log_data(struct flb_in_dbus_config *dbus_config,
         flb_error("[in_dbus] Message has no arguments");
         in_dbus_reply_error(msg, conn, "Method call has no arguments");
         return;
-    } else if (DBUS_TYPE_DICT_ENTRY != dbus_message_iter_get_arg_type(&args)) {
+    } else if (DBUS_TYPE_ARRAY != dbus_message_iter_get_arg_type(&args)) {
         flb_error("[in_dbus] Message is not a dictionary");
+        flb_error("%i", dbus_message_iter_get_arg_type(&args));
         in_dbus_reply_error(msg, conn, "Method call has invalid arguments");
         return;
     }
@@ -138,23 +140,120 @@ static void in_dbus_log_data(struct flb_in_dbus_config *dbus_config,
                             msgpack_sbuffer_write);
     }
 
+    /*  Write the time for this sample */
     msgpack_pack_array(&dbus_config->mp_pck, 2);
-        flb_time_append_to_msgpack(&out_time, &dbus_config->mp_pck, 0);
-        msgpack_pack_map(&dbus_config->mp_pck, 1);
-            msgpack_pack_str(&dbus_config->mp_pck, 4);
-                msgpack_pack_str_body(&dbus_config->mp_pck, "dbus", 4);
-            msgpack_pack_str(&dbus_config->mp_pck, 3);
-                msgpack_pack_str_body(&dbus_config->mp_pck, "lol", 3);
-    msgpack_pack_array(&dbus_config->mp_pck, 2);
-        flb_time_append_to_msgpack(&out_time, &dbus_config->mp_pck, 0);
-        msgpack_pack_map(&dbus_config->mp_pck, 1);
-            msgpack_pack_str(&dbus_config->mp_pck, 4);
-                msgpack_pack_str_body(&dbus_config->mp_pck, "omg", 4);
-            msgpack_pack_str(&dbus_config->mp_pck, 3);
-                msgpack_pack_str_body(&dbus_config->mp_pck, "wtf", 3);
+    flb_time_append_to_msgpack(&out_time, &dbus_config->mp_pck, 0);
+
+    {   /*  Count up arguments, and record this in the pack */
+        unsigned count = 0;
+        dbus_message_iter_recurse(&args, &dict);
+        while (dbus_message_iter_get_arg_type(&dict) != DBUS_TYPE_INVALID) {
+            count++;
+            dbus_message_iter_next(&dict);
+        }
+        msgpack_pack_map(&dbus_config->mp_pck, count);
+    }
+
+    dbus_message_iter_recurse(&args, &dict);
+    while (dbus_message_iter_get_arg_type(&dict) != DBUS_TYPE_INVALID) {
+        DBusMessageIter entry;
+        DBusMessageIter variant;
+        char* key = "";
+
+        if (dbus_message_iter_get_arg_type(&dict) != DBUS_TYPE_DICT_ENTRY) {
+            flb_error("[in_dbus] Expected dictionary key");
+            break;
+        }
+
+        dbus_message_iter_recurse(&dict, &entry);
+        if (DBUS_TYPE_STRING != dbus_message_iter_get_arg_type(&entry)) {
+            flb_error("[in_dbus] Expected string key");
+            break;
+        }
+        dbus_message_iter_get_basic(&entry, &key);
+
+        dbus_message_iter_next(&entry);
+        if (DBUS_TYPE_VARIANT != dbus_message_iter_get_arg_type(&entry)) {
+            flb_error("[in_dbus] Expected variant key");
+            break;
+        }
+
+        dbus_message_iter_recurse(&entry, &variant);
+
+        {   /* Pack the key */
+            size_t key_len = strlen(key) - 1;
+            msgpack_pack_str(&dbus_config->mp_pck, key_len);
+            msgpack_pack_str_body(&dbus_config->mp_pck, key, key_len);
+        }
+
+        switch (dbus_message_iter_get_arg_type(&variant)) {
+            case DBUS_TYPE_INT16: {
+                int16_t i;
+                dbus_message_iter_get_basic(&variant, &i);
+                msgpack_pack_int16(&dbus_config->mp_pck, i);
+                break;
+            }
+            case DBUS_TYPE_UINT16: {
+                uint16_t i;
+                dbus_message_iter_get_basic(&variant, &i);
+                msgpack_pack_uint16(&dbus_config->mp_pck, i);
+                break;
+            }
+            case DBUS_TYPE_INT32: {
+                int32_t i;
+                dbus_message_iter_get_basic(&variant, &i);
+                msgpack_pack_int32(&dbus_config->mp_pck, i);
+                break;
+            }
+            case DBUS_TYPE_UINT32: {
+                uint32_t i;
+                dbus_message_iter_get_basic(&variant, &i);
+                msgpack_pack_uint32(&dbus_config->mp_pck, i);
+                break;
+            }
+            case DBUS_TYPE_INT64: {
+                int64_t i;
+                dbus_message_iter_get_basic(&variant, &i);
+                msgpack_pack_int64(&dbus_config->mp_pck, i);
+                break;
+            }
+            case DBUS_TYPE_UINT64: {
+                uint64_t i;
+                dbus_message_iter_get_basic(&variant, &i);
+                msgpack_pack_uint64(&dbus_config->mp_pck, i);
+                break;
+            }
+            case DBUS_TYPE_DOUBLE: {
+                double d;
+                dbus_message_iter_get_basic(&variant, &d);
+                msgpack_pack_double(&dbus_config->mp_pck, d);
+                break;
+            }
+            case DBUS_TYPE_BYTE: {
+                uint8_t b;
+                dbus_message_iter_get_basic(&variant, &b);
+                msgpack_pack_uint8(&dbus_config->mp_pck, b);
+                break;
+            }
+            case DBUS_TYPE_STRING: {
+                char* s;
+                size_t len;
+                dbus_message_iter_get_basic(&variant, &s);
+                len = strlen(s) - 1;
+                msgpack_pack_str(&dbus_config->mp_pck, len);
+                msgpack_pack_str_body(&dbus_config->mp_pck, s, len);
+                break;
+            }
+            default:
+                flb_error("[in_dbus] Unknown type '%c'",
+                          dbus_message_iter_get_arg_type(&variant));
+                break;
+        }
+        dbus_message_iter_next(&dict);
+    }
     pthread_mutex_unlock(&dbus_config->mut);
 
-    /*  Send a reply */
+    /*  Send a DBus reply */
     reply = dbus_message_new_method_return(msg);
     if (!dbus_connection_send(conn, reply, &serial)) {
         flb_error("[in_dbus] Could not send reply");
