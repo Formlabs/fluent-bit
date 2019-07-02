@@ -62,7 +62,8 @@ static int in_dbus_collect(struct flb_input_instance *i_ins,
     return 0;
 }
 
-static void in_dbus_write_one(struct flb_in_dbus_config *dbus_config)
+static void in_dbus_log_data(struct flb_in_dbus_config *dbus_config,
+                             DBusMessage* msg, DBusConnection* conn)
 {
     pthread_mutex_lock(&dbus_config->mut);
     if (dbus_config->mp_sbuf == NULL) {
@@ -95,6 +96,10 @@ static void* in_dbus_worker(void *in_context)
 {
     struct flb_in_dbus_config *dbus_config = in_context;
     DBusConnection* conn;
+    DBusMessage* msg;
+
+    const char* iface = "com.fluent.fluentbit";
+
     DBusError err;
     int ret;
 
@@ -122,17 +127,33 @@ static void* in_dbus_worker(void *in_context)
     }
 
     while (true) {
-        in_dbus_write_one(dbus_config);
-        sleep(1);
-
-        // Check for cancellation
+        /* check for cancellation */
         pthread_mutex_lock(&dbus_config->mut);
         if (dbus_config->done) {
             pthread_mutex_unlock(&dbus_config->mut);
             break;
         }
         pthread_mutex_unlock(&dbus_config->mut);
+
+        /* non blocking read of the next available message */
+        dbus_connection_read_write(conn, 100);
+        msg = dbus_connection_pop_message(conn);
+
+        // loop again if we haven't got a message
+        if (NULL == msg) {
+            continue;
+        }
+
+        flb_info("Got message");
+        if (dbus_message_is_method_call(msg, iface, "LogData")) {
+            flb_info("Logging data");
+            in_dbus_log_data(dbus_config, msg, conn);
+        }
+
+        dbus_message_unref(msg);
     }
+
+    dbus_connection_close(conn);
     return NULL;
 }
 
@@ -144,7 +165,7 @@ static int in_dbus_config_read(struct flb_in_dbus_config *dbus_config,
 
     str = flb_input_get_property("dbus_name", in);
     if (str == NULL) {
-        str = "com.fluent.fluent-bit";
+        str = "com.fluent.fluentbit";
         flb_info("[in_dbus] 'dbus_name' not found, using default %s", str);
     }
     dbus_config->dbus_name = str;
