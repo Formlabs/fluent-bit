@@ -30,13 +30,10 @@
 #include <msgpack.h>
 #include <pthread.h>
 
-#define DEFAULT_BUF_SIZE      4096
-#define DEFAULT_INTERVAL_SEC  1
-#define DEFAULT_INTERVAL_NSEC 0
-
 struct flb_in_dbus_config {
     /*  Populated during init and never changed */
-    const char *path;
+    const char *dbus_name;
+    int dbus_bus;
 
     /*  This mutex protects done and mp_sbuf, which are shared
      *  between the worker and main threads. */
@@ -47,7 +44,6 @@ struct flb_in_dbus_config {
     /*  Everything below here is maintained by the worker */
     pthread_t worker;
     msgpack_packer mp_pck;
-    DBusConnection* conn;
 };
 
 extern struct flb_input_plugin in_dbus_plugin;

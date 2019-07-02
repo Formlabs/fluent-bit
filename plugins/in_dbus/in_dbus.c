@@ -94,6 +94,33 @@ static void in_dbus_write_one(struct flb_in_dbus_config *dbus_config)
 static void* in_dbus_worker(void *in_context)
 {
     struct flb_in_dbus_config *dbus_config = in_context;
+    DBusConnection* conn;
+    DBusError err;
+    int ret;
+
+    dbus_error_init(&err);
+    conn = dbus_bus_get(dbus_config->dbus_bus, &err);
+    if (dbus_error_is_set(&err)) {
+        flb_error("DBus connection Error (%s)", err.message);
+        dbus_error_free(&err);
+    }
+    if (NULL == conn) {
+        flb_error("DBus error: connection is NULL");
+        return NULL;
+    }
+
+    /* request our name on the bus and check for errors */
+    ret = dbus_bus_request_name(conn, dbus_config->dbus_name,
+                                DBUS_NAME_FLAG_REPLACE_EXISTING, &err);
+    if (dbus_error_is_set(&err)) {
+        flb_error("DBus name error (%s)", err.message);
+        dbus_error_free(&err);
+    }
+    if (DBUS_REQUEST_NAME_REPLY_PRIMARY_OWNER != ret) {
+        flb_error("DBus error: not Primary Owner (%d)\n", ret);
+        return NULL;
+    }
+
     while (true) {
         in_dbus_write_one(dbus_config);
         sleep(1);
@@ -113,15 +140,29 @@ static void* in_dbus_worker(void *in_context)
 static int in_dbus_config_read(struct flb_in_dbus_config *dbus_config,
                                struct flb_input_instance *in)
 {
-    const char *path = NULL;
+    const char *str = NULL;
 
-    /* filepath setting */
-    path = flb_input_get_property("path", in);
-    if (path == NULL) {
-        flb_error("[in_dbus] no input 'path' was given");
-        return -1;
+    str = flb_input_get_property("dbus_name", in);
+    if (str == NULL) {
+        str = "com.fluent.fluent-bit";
+        flb_info("[in_dbus] 'dbus_name' not found, using default %s", str);
     }
-    dbus_config->path = path;
+    dbus_config->dbus_name = str;
+
+    str = flb_input_get_property("dbus_bus", in);
+    if (str == NULL) {
+        dbus_config->dbus_bus = DBUS_BUS_SYSTEM;
+        flb_info("[in_dbus] 'dbus_bus' not found, using system bus");
+    } else if (!strcmp(str, "system")) {
+        dbus_config->dbus_bus = DBUS_BUS_SYSTEM;
+        flb_info("[in_dbus] Using system bus");
+    } else if (!strcmp(str, "session")) {
+        dbus_config->dbus_bus = DBUS_BUS_SESSION;
+        flb_info("[in_dbus] Using session bus");
+    } else {
+        dbus_config->dbus_bus = DBUS_BUS_SYSTEM;
+        flb_info("[in_dbus] Invalid bus %s, using system bus", str);
+    }
 
     return 0;
 }
@@ -140,7 +181,6 @@ static int in_dbus_init(struct flb_input_instance *in,
 {
     struct flb_in_dbus_config *dbus_config = NULL;
     int ret = -1;
-    DBusError err;
 
     /* Allocate space for the configuration */
     dbus_config = flb_malloc(sizeof(struct flb_in_dbus_config));
@@ -164,43 +204,20 @@ static int in_dbus_init(struct flb_input_instance *in,
     }
     flb_input_set_context(in, dbus_config);
 
+
+    /* Start the worker thread running */
+    if (pthread_create(&config->worker, NULL, in_dbus_worker, dbus_config)) {
+        flb_error("could not create worker thread");
+        delete_dbus_config(dbus_config);
+        return -1;
+    }
+
+    /*  Start the collector running */
     ret = flb_input_set_collector_time(in,
                                        in_dbus_collect,
                                        1, 0, config);
     if (ret < 0) {
         flb_error("could not set collector for dbus input plugin");
-        delete_dbus_config(dbus_config);
-        return -1;
-    }
-
-    dbus_error_init(&err);
-    dbus_config->conn = dbus_bus_get(DBUS_BUS_SYSTEM, &err);
-    if (dbus_error_is_set(&err)) {
-        flb_error("DBus connection Error (%s)", err.message);
-        dbus_error_free(&err);
-    }
-    if (NULL == dbus_config->conn) {
-        flb_error("DBus error: connection is NULL");
-        delete_dbus_config(dbus_config);
-        return -1;
-    }
-
-    // request our name on the bus and check for errors
-    ret = dbus_bus_request_name(dbus_config->conn, dbus_config->path,
-                                DBUS_NAME_FLAG_REPLACE_EXISTING, &err);
-    if (dbus_error_is_set(&err)) {
-        flb_error("DBus name error (%s)", err.message);
-        dbus_error_free(&err);
-    }
-    if (DBUS_REQUEST_NAME_REPLY_PRIMARY_OWNER != ret) {
-        flb_error("DBus error: not Primary Owner (%d)\n", ret);
-        delete_dbus_config(dbus_config);
-        return -1;
-    }
-
-    /* Start the worker thread running */
-    if (pthread_create(&config->worker, NULL, in_dbus_worker, dbus_config)) {
-        flb_error("could not create worker thread");
         delete_dbus_config(dbus_config);
         return -1;
     }
