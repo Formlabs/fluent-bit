@@ -351,19 +351,19 @@ static int in_dbus_config_read(struct flb_in_dbus_config *dbus_config,
     str = flb_input_get_property("dbus_bus", in);
     if (str == NULL) {
         dbus_config->dbus_bus = DBUS_BUS_SYSTEM;
-        flb_info("[in_dbus] 'dbus_bus' not found, using system bus");
+        flb_trace("[in_dbus] 'dbus_bus' not found, using system bus");
     }
     else if (!strcmp(str, "system")) {
         dbus_config->dbus_bus = DBUS_BUS_SYSTEM;
-        flb_info("[in_dbus] Using system bus");
+        flb_trace("[in_dbus] Using system bus");
     }
     else if (!strcmp(str, "session")) {
         dbus_config->dbus_bus = DBUS_BUS_SESSION;
-        flb_info("[in_dbus] Using session bus");
+        flb_trace("[in_dbus] Using session bus");
     }
     else {
         dbus_config->dbus_bus = DBUS_BUS_SYSTEM;
-        flb_info("[in_dbus] Invalid bus %s, using system bus", str);
+        flb_warn("[in_dbus] Invalid bus %s, using system bus", str);
     }
 
     return 0;
