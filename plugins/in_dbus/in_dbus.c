@@ -62,18 +62,50 @@ static int in_dbus_collect(struct flb_input_instance *i_ins,
     return 0;
 }
 
+static void in_dbus_reply_error(DBusMessage* msg, DBusConnection* conn,
+                                const char* message)
+{
+    DBusMessage* reply;
+    dbus_uint32_t serial = 0;
+
+    reply = dbus_message_new_error(msg, DBUS_ERROR_FAILED, message);
+    if (dbus_connection_send(conn, reply, &serial)) {
+        dbus_connection_flush(conn);
+    } else {
+        flb_error("[in_dbus] Failed to send error reply");
+    }
+    dbus_message_unref(reply);
+}
+
 static void in_dbus_log_data(struct flb_in_dbus_config *dbus_config,
                              DBusMessage* msg, DBusConnection* conn)
 {
+    DBusMessageIter args;
+    char* key = "";
+    DBusMessage* reply;
+    dbus_uint32_t serial = 0;
+    struct flb_time out_time;
+
+    flb_time_get(&out_time);
+
+    /* read the arguments, returning immediately if they're invalid */
+    if (!dbus_message_iter_init(msg, &args)) {
+        flb_error("[in_dbus] Message has no arguments");
+        in_dbus_reply_error(msg, conn, "Method call has no arguments");
+        return;
+    } else if (DBUS_TYPE_DICT_ENTRY != dbus_message_iter_get_arg_type(&args)) {
+        flb_error("[in_dbus] Message is not a dictionary");
+        in_dbus_reply_error(msg, conn, "Method call has invalid arguments");
+        return;
+    }
+
+    /*  Initialize the msgpack buffer if it's empty */
     pthread_mutex_lock(&dbus_config->mut);
     if (dbus_config->mp_sbuf == NULL) {
         dbus_config->mp_sbuf = msgpack_sbuffer_new();
         msgpack_packer_init(&dbus_config->mp_pck, dbus_config->mp_sbuf,
                             msgpack_sbuffer_write);
     }
-
-    struct flb_time out_time;
-    flb_time_get(&out_time);
 
     msgpack_pack_array(&dbus_config->mp_pck, 2);
         flb_time_append_to_msgpack(&out_time, &dbus_config->mp_pck, 0);
@@ -90,6 +122,16 @@ static void in_dbus_log_data(struct flb_in_dbus_config *dbus_config,
             msgpack_pack_str(&dbus_config->mp_pck, 3);
                 msgpack_pack_str_body(&dbus_config->mp_pck, "wtf", 3);
     pthread_mutex_unlock(&dbus_config->mut);
+
+    /*  Send a reply */
+    reply = dbus_message_new_method_return(msg);
+    if (!dbus_connection_send(conn, reply, &serial)) {
+        flb_error("[in_dbus] Could not send reply");
+    } else {
+         dbus_connection_flush(conn);
+    }
+    dbus_message_unref(reply);
+
 }
 
 static void* in_dbus_worker(void *in_context)
@@ -144,7 +186,7 @@ static void* in_dbus_worker(void *in_context)
             continue;
         }
 
-        flb_info("Got message");
+        flb_info("Got message to %s %s", dbus_message_get_interface(msg), dbus_message_get_member(msg));
         if (dbus_message_is_method_call(msg, iface, "LogData")) {
             flb_info("Logging data");
             in_dbus_log_data(dbus_config, msg, conn);
