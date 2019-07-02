@@ -20,10 +20,7 @@
 #ifndef FLB_IN_DBUS_H
 #define FLB_IN_DBUS_H
 
-#include <fluent-bit/flb_config.h>
 #include <fluent-bit/flb_input.h>
-#include <fluent-bit/flb_utils.h>
-#include <fluent-bit/flb_parser.h>
 
 #include <dbus/dbus.h>
 

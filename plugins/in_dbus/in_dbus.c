@@ -26,6 +26,7 @@
 #include <fluent-bit/flb_pack.h>
 #include <fluent-bit/flb_parser.h>
 #include <msgpack.h>
+#include <dbus/dbus.h>
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -42,19 +43,19 @@ static int in_dbus_collect(struct flb_input_instance *i_ins,
     struct flb_in_dbus_config *dbus_config = in_context;
     msgpack_sbuffer* mp_sbuf;
 
+    /* If there's no data available, then return right away */
     pthread_mutex_lock(&dbus_config->mut);
-    // If there's no data available, then return right away
     if (dbus_config->mp_sbuf == NULL) {
         pthread_mutex_unlock(&dbus_config->mut);
         return 0;
     }
 
-    // Steal the messagepack buffer then release the lock
+    /* Steal the messagepack buffer then release the lock */
     mp_sbuf = dbus_config->mp_sbuf;
     dbus_config->mp_sbuf = NULL;
     pthread_mutex_unlock(&dbus_config->mut);
 
-    // Write the data from the buffer, then free it
+    /* Write the data from the buffer, then free it */
     flb_input_chunk_append_raw(i_ins, NULL, 0,
                                mp_sbuf->data, mp_sbuf->size);
     msgpack_sbuffer_free(mp_sbuf);
@@ -71,7 +72,8 @@ static void in_dbus_reply_error(DBusMessage* msg, DBusConnection* conn,
     reply = dbus_message_new_error(msg, DBUS_ERROR_FAILED, message);
     if (dbus_connection_send(conn, reply, &serial)) {
         dbus_connection_flush(conn);
-    } else {
+    }
+    else {
         flb_error("[in_dbus] Failed to send error reply");
     }
     dbus_message_unref(reply);
@@ -101,9 +103,11 @@ static void in_dbus_introspect(struct flb_in_dbus_config *dbus_config,
     if (!dbus_message_iter_append_basic(
                 &args, DBUS_TYPE_STRING, &description)) {
         flb_error("[in_dbus] Could not append description");
-    } else if (!dbus_connection_send(conn, reply, &serial)) {
+    }
+    else if (!dbus_connection_send(conn, reply, &serial)) {
         flb_error("[in_dbus] Could not send reply");
-    } else {
+    }
+    else {
         dbus_connection_flush(conn);
     }
     dbus_message_unref(reply);
@@ -125,7 +129,8 @@ static void in_dbus_log_data(struct flb_in_dbus_config *dbus_config,
         flb_error("[in_dbus] Message has no arguments");
         in_dbus_reply_error(msg, conn, "Method call has no arguments");
         return;
-    } else if (DBUS_TYPE_ARRAY != dbus_message_iter_get_arg_type(&args)) {
+    }
+    else if (DBUS_TYPE_ARRAY != dbus_message_iter_get_arg_type(&args)) {
         flb_error("[in_dbus] Message is not a dictionary");
         flb_error("%i", dbus_message_iter_get_arg_type(&args));
         in_dbus_reply_error(msg, conn, "Method call has invalid arguments");
@@ -311,7 +316,7 @@ static void* in_dbus_worker(void *in_context)
         dbus_connection_read_write(conn, 100);
         msg = dbus_connection_pop_message(conn);
 
-        // loop again if we haven't got a message
+        /* loop again if we haven't got a message */
         if (NULL == msg) {
             continue;
         }
@@ -348,13 +353,16 @@ static int in_dbus_config_read(struct flb_in_dbus_config *dbus_config,
     if (str == NULL) {
         dbus_config->dbus_bus = DBUS_BUS_SYSTEM;
         flb_info("[in_dbus] 'dbus_bus' not found, using system bus");
-    } else if (!strcmp(str, "system")) {
+    }
+    else if (!strcmp(str, "system")) {
         dbus_config->dbus_bus = DBUS_BUS_SYSTEM;
         flb_info("[in_dbus] Using system bus");
-    } else if (!strcmp(str, "session")) {
+    }
+    else if (!strcmp(str, "session")) {
         dbus_config->dbus_bus = DBUS_BUS_SESSION;
         flb_info("[in_dbus] Using session bus");
-    } else {
+    }
+    else {
         dbus_config->dbus_bus = DBUS_BUS_SYSTEM;
         flb_info("[in_dbus] Invalid bus %s, using system bus", str);
     }
@@ -425,12 +433,12 @@ static int in_dbus_exit(void *data, struct flb_config *config)
     (void) *config;
     struct flb_in_dbus_config *dbus_config = data;
 
-    // Ask for the worker thread to shut down
+    /* Ask for the worker thread to shut down */
     pthread_mutex_lock(&dbus_config->mut);
     dbus_config->done = true;
     pthread_mutex_unlock(&dbus_config->mut);
 
-    // Join the worker thread, then clean up
+    /* Join the worker thread, then clean up */
     pthread_join(dbus_config->worker, NULL);
 
     delete_dbus_config(dbus_config);
