@@ -181,7 +181,7 @@ static void in_dbus_log_data(struct flb_in_dbus_config *dbus_config,
         dbus_message_iter_recurse(&entry, &variant);
 
         {   /* Pack the key */
-            size_t key_len = strlen(key) - 1;
+            size_t key_len = strlen(key);
             msgpack_pack_str(&dbus_config->mp_pck, key_len);
             msgpack_pack_str_body(&dbus_config->mp_pck, key, key_len);
         }
@@ -238,8 +238,9 @@ static void in_dbus_log_data(struct flb_in_dbus_config *dbus_config,
             case DBUS_TYPE_STRING: {
                 char* s;
                 size_t len;
+
                 dbus_message_iter_get_basic(&variant, &s);
-                len = strlen(s) - 1;
+                len = strlen(s);
                 msgpack_pack_str(&dbus_config->mp_pck, len);
                 msgpack_pack_str_body(&dbus_config->mp_pck, s, len);
                 break;
