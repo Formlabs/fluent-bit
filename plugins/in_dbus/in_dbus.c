@@ -77,6 +77,37 @@ static void in_dbus_reply_error(DBusMessage* msg, DBusConnection* conn,
     dbus_message_unref(reply);
 }
 
+static void in_dbus_introspect(struct flb_in_dbus_config *dbus_config,
+                               DBusMessage* msg, DBusConnection* conn)
+{
+    DBusMessage* reply;
+    DBusMessageIter args;
+    dbus_uint32_t serial = 0;
+    const char* description = ""
+        "<!DOCTYPE node PUBLIC \"-//freedesktop//DTD D-BUS Object Introspection 1.0//EN\""
+        "        \"http://www.freedesktop.org/standards/dbus/1.0/introspect.dtd\">"
+        "<node>"
+        "    <interface name=\"com.fluent.fluentbit\">"
+        "        <method name=\"LogData\">"
+        "            <arg type=\"{sv}\" direction=\"in\"/>"
+        "        </method>"
+        "    </interface>"
+        "</node>";
+
+    reply = dbus_message_new_method_return(msg);
+
+    dbus_message_iter_init_append(reply, &args);
+    if (!dbus_message_iter_append_basic(
+                &args, DBUS_TYPE_STRING, &description)) {
+        flb_error("[in_dbus] Could not append description");
+    } else if (!dbus_connection_send(conn, reply, &serial)) {
+        flb_error("[in_dbus] Could not send reply");
+    } else {
+        dbus_connection_flush(conn);
+    }
+    dbus_message_unref(reply);
+}
+
 static void in_dbus_log_data(struct flb_in_dbus_config *dbus_config,
                              DBusMessage* msg, DBusConnection* conn)
 {
@@ -128,10 +159,9 @@ static void in_dbus_log_data(struct flb_in_dbus_config *dbus_config,
     if (!dbus_connection_send(conn, reply, &serial)) {
         flb_error("[in_dbus] Could not send reply");
     } else {
-         dbus_connection_flush(conn);
+        dbus_connection_flush(conn);
     }
     dbus_message_unref(reply);
-
 }
 
 static void* in_dbus_worker(void *in_context)
@@ -186,9 +216,11 @@ static void* in_dbus_worker(void *in_context)
             continue;
         }
 
-        flb_info("Got message to %s %s", dbus_message_get_interface(msg), dbus_message_get_member(msg));
-        if (dbus_message_is_method_call(msg, iface, "LogData")) {
-            flb_info("Logging data");
+        if (dbus_message_is_method_call(
+                msg, "org.freedesktop.DBus.Introspectable", "Introspect")) {
+            in_dbus_introspect(dbus_config, msg, conn);
+        }
+        else if (dbus_message_is_method_call(msg, iface, "LogData")) {
             in_dbus_log_data(dbus_config, msg, conn);
         }
 
