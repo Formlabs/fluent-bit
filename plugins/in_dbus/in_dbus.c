@@ -464,7 +464,8 @@ static int in_dbus_init(struct flb_input_instance *in,
 
 
     /* Start the worker thread running */
-    if (pthread_create(&config->worker, NULL, in_dbus_worker, dbus_config)) {
+    if (pthread_create(&dbus_config->worker, NULL,
+                       in_dbus_worker, dbus_config)) {
         flb_error("[in_dbus] could not create worker thread");
         delete_dbus_config(dbus_config);
         return -1;
