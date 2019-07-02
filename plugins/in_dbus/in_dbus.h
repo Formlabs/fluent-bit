@@ -25,6 +25,8 @@
 #include <fluent-bit/flb_utils.h>
 #include <fluent-bit/flb_parser.h>
 
+#include <dbus/dbus.h>
+
 #include <msgpack.h>
 #include <pthread.h>
 
@@ -33,12 +35,19 @@
 #define DEFAULT_INTERVAL_NSEC 0
 
 struct flb_in_dbus_config {
+    /*  Populated during init and never changed */
     const char *path;
+
+    /*  This mutex protects done and mp_sbuf, which are shared
+     *  between the worker and main threads. */
     pthread_mutex_t mut;
-    msgpack_packer mp_pck;
-    msgpack_sbuffer* mp_sbuf;
-    pthread_t worker;
     bool done;
+    msgpack_sbuffer* mp_sbuf;
+
+    /*  Everything below here is maintained by the worker */
+    pthread_t worker;
+    msgpack_packer mp_pck;
+    DBusConnection* conn;
 };
 
 extern struct flb_input_plugin in_dbus_plugin;

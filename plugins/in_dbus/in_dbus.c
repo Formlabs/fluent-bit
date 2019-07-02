@@ -33,7 +33,9 @@
 
 #include "in_dbus.h"
 
-/* cb_collect callback */
+/* cb_collect callback
+ * This callback does very little work, because data is being accumulated
+ * into the messagepack buffer by a worker thread. */
 static int in_dbus_collect(struct flb_input_instance *i_ins,
                            struct flb_config *config, void *in_context)
 {
@@ -127,13 +129,6 @@ static int in_dbus_config_read(struct flb_in_dbus_config *dbus_config,
 static void delete_dbus_config(struct flb_in_dbus_config *dbus_config)
 {
     if (dbus_config) {
-        // Ask for the worker thread to shut down
-        pthread_mutex_lock(&dbus_config->mut);
-        dbus_config->done = true;
-        pthread_mutex_unlock(&dbus_config->mut);
-
-        // Join the worker thread, then clean up
-        pthread_join(dbus_config->worker, NULL);
         pthread_mutex_destroy(&dbus_config->mut);
         flb_free(dbus_config);
     }
@@ -145,20 +140,27 @@ static int in_dbus_init(struct flb_input_instance *in,
 {
     struct flb_in_dbus_config *dbus_config = NULL;
     int ret = -1;
+    DBusError err;
 
     /* Allocate space for the configuration */
     dbus_config = flb_malloc(sizeof(struct flb_in_dbus_config));
     if (dbus_config == NULL) {
         return -1;
     }
-    dbus_config->mp_sbuf = NULL;
-    dbus_config->done = false;
-    pthread_mutex_init(&dbus_config->mut, NULL);
+
+    /* Fill the entire config with zeros to start */
+    memset(dbus_config, 0, sizeof(struct flb_in_dbus_config));
+    if (pthread_mutex_init(&dbus_config->mut, NULL)) {
+        flb_error("could not create mutex");
+        flb_free(dbus_config);
+        return -1;
+    }
 
     /* Initialize dbus config */
     ret = in_dbus_config_read(dbus_config, in);
     if (ret < 0) {
-        goto init_error;
+        delete_dbus_config(dbus_config);
+        return -1;
     }
     flb_input_set_context(in, dbus_config);
 
@@ -167,25 +169,57 @@ static int in_dbus_init(struct flb_input_instance *in,
                                        1, 0, config);
     if (ret < 0) {
         flb_error("could not set collector for dbus input plugin");
-        goto init_error;
+        delete_dbus_config(dbus_config);
+        return -1;
     }
 
+    dbus_error_init(&err);
+    dbus_config->conn = dbus_bus_get(DBUS_BUS_SYSTEM, &err);
+    if (dbus_error_is_set(&err)) {
+        flb_error("DBus connection Error (%s)", err.message);
+        dbus_error_free(&err);
+    }
+    if (NULL == dbus_config->conn) {
+        flb_error("DBus error: connection is NULL");
+        delete_dbus_config(dbus_config);
+        return -1;
+    }
+
+    // request our name on the bus and check for errors
+    ret = dbus_bus_request_name(dbus_config->conn, dbus_config->path,
+                                DBUS_NAME_FLAG_REPLACE_EXISTING, &err);
+    if (dbus_error_is_set(&err)) {
+        flb_error("DBus name error (%s)", err.message);
+        dbus_error_free(&err);
+    }
+    if (DBUS_REQUEST_NAME_REPLY_PRIMARY_OWNER != ret) {
+        flb_error("DBus error: not Primary Owner (%d)\n", ret);
+        delete_dbus_config(dbus_config);
+        return -1;
+    }
+
+    /* Start the worker thread running */
     if (pthread_create(&config->worker, NULL, in_dbus_worker, dbus_config)) {
         flb_error("could not create worker thread");
-        goto init_error;
+        delete_dbus_config(dbus_config);
+        return -1;
     }
 
     return 0;
-
-  init_error:
-    delete_dbus_config(dbus_config);
-    return -1;
 }
 
 static int in_dbus_exit(void *data, struct flb_config *config)
 {
     (void) *config;
     struct flb_in_dbus_config *dbus_config = data;
+
+    // Ask for the worker thread to shut down
+    pthread_mutex_lock(&dbus_config->mut);
+    dbus_config->done = true;
+    pthread_mutex_unlock(&dbus_config->mut);
+
+    // Join the worker thread, then clean up
+    pthread_join(dbus_config->worker, NULL);
 
     delete_dbus_config(dbus_config);
     return 0;
