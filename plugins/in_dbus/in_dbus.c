@@ -430,7 +430,6 @@ static int in_dbus_init(struct flb_input_instance *in,
     }
     flb_input_set_context(in, dbus_config);
 
-
     /* Start the worker thread running */
     if (pthread_create(&dbus_config->worker, NULL,
                        in_dbus_worker, dbus_config)) {
