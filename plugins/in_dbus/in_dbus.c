@@ -411,13 +411,11 @@ static int in_dbus_init(struct flb_input_instance *in,
     int ret = -1;
 
     /* Allocate space for the configuration */
-    dbus_config = flb_malloc(sizeof(struct flb_in_dbus_config));
+    dbus_config = flb_calloc(1, sizeof(struct flb_in_dbus_config));
     if (dbus_config == NULL) {
         return -1;
     }
 
-    /* Fill the entire config with zeros to start */
-    memset(dbus_config, 0, sizeof(struct flb_in_dbus_config));
     if (pthread_mutex_init(&dbus_config->mut, NULL)) {
         flb_error("[in_dbus] could not create mutex");
         flb_free(dbus_config);
