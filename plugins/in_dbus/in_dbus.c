@@ -192,54 +192,22 @@ static void in_dbus_log_dict(struct flb_in_dbus_config *dbus_config,
         }
 
         switch (dbus_message_iter_get_arg_type(&variant)) {
-            case DBUS_TYPE_INT16: {
-                int16_t i;
-                dbus_message_iter_get_basic(&variant, &i);
-                msgpack_pack_int16(&dbus_config->mp_pck, i);
-                break;
+#define GET(DBUS_TYPE, TYPE, MSGPACK_FUNC)                  \
+            case DBUS_TYPE: {                               \
+                TYPE v;                                     \
+                dbus_message_iter_get_basic(&variant, &v);  \
+                MSGPACK_FUNC(&dbus_config->mp_pck, v);      \
+                break;                                      \
             }
-            case DBUS_TYPE_UINT16: {
-                uint16_t i;
-                dbus_message_iter_get_basic(&variant, &i);
-                msgpack_pack_uint16(&dbus_config->mp_pck, i);
-                break;
-            }
-            case DBUS_TYPE_INT32: {
-                int32_t i;
-                dbus_message_iter_get_basic(&variant, &i);
-                msgpack_pack_int32(&dbus_config->mp_pck, i);
-                break;
-            }
-            case DBUS_TYPE_UINT32: {
-                uint32_t i;
-                dbus_message_iter_get_basic(&variant, &i);
-                msgpack_pack_uint32(&dbus_config->mp_pck, i);
-                break;
-            }
-            case DBUS_TYPE_INT64: {
-                int64_t i;
-                dbus_message_iter_get_basic(&variant, &i);
-                msgpack_pack_int64(&dbus_config->mp_pck, i);
-                break;
-            }
-            case DBUS_TYPE_UINT64: {
-                uint64_t i;
-                dbus_message_iter_get_basic(&variant, &i);
-                msgpack_pack_uint64(&dbus_config->mp_pck, i);
-                break;
-            }
-            case DBUS_TYPE_DOUBLE: {
-                double d;
-                dbus_message_iter_get_basic(&variant, &d);
-                msgpack_pack_double(&dbus_config->mp_pck, d);
-                break;
-            }
-            case DBUS_TYPE_BYTE: {
-                uint8_t b;
-                dbus_message_iter_get_basic(&variant, &b);
-                msgpack_pack_uint8(&dbus_config->mp_pck, b);
-                break;
-            }
+            GET(DBUS_TYPE_INT16,  int16_t,  msgpack_pack_int16);
+            GET(DBUS_TYPE_UINT16, uint16_t, msgpack_pack_uint16);
+            GET(DBUS_TYPE_INT32,  int32_t,  msgpack_pack_int32);
+            GET(DBUS_TYPE_UINT32, uint32_t, msgpack_pack_uint32);
+            GET(DBUS_TYPE_INT64,  int64_t,  msgpack_pack_int64);
+            GET(DBUS_TYPE_UINT64, uint64_t, msgpack_pack_uint64);
+            GET(DBUS_TYPE_DOUBLE, double,   msgpack_pack_double);
+            GET(DBUS_TYPE_BYTE,   uint8_t,  msgpack_pack_uint8);
+#undef GET
             case DBUS_TYPE_STRING: {
                 char* s;
                 size_t len;
