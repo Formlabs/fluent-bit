@@ -429,6 +429,7 @@ static void delete_dbus_config(struct flb_in_dbus_config *dbus_config)
 {
     if (dbus_config) {
         pthread_mutex_destroy(&dbus_config->mut);
+        msgpack_sbuffer_free(dbus_config->mp_sbuf);
         flb_free(dbus_config);
     }
 }
