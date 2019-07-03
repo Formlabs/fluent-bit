@@ -368,7 +368,7 @@ static int in_dbus_config_read(struct flb_in_dbus_config *dbus_config,
     str = flb_input_get_property("dbus_name", in);
     if (str == NULL) {
         str = "com.fluent.fluentbit";
-        flb_info("[in_dbus] 'dbus_name' not found, using default %s", str);
+        flb_trace("[in_dbus] 'dbus_name' not found, using default %s", str);
     }
     dbus_config->dbus_name = str;
 
@@ -386,8 +386,9 @@ static int in_dbus_config_read(struct flb_in_dbus_config *dbus_config,
         flb_trace("[in_dbus] Using session bus");
     }
     else {
-        dbus_config->dbus_bus = DBUS_BUS_SYSTEM;
-        flb_warn("[in_dbus] Invalid bus %s, using system bus", str);
+        flb_error("[in_dbus] Invalid bus '%s' "
+                  "(must be 'system' or 'session')", str);
+        return -1;
     }
 
     return 0;
