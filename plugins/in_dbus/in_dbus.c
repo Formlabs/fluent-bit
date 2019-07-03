@@ -218,6 +218,17 @@ static void in_dbus_log_dict(struct flb_in_dbus_config *dbus_config,
                 msgpack_pack_str_body(&dbus_config->mp_pck, s, len);
                 break;
             }
+            case DBUS_TYPE_BOOLEAN: {
+                dbus_bool_t b;
+                dbus_message_iter_get_basic(&variant, &b);
+                if (b) {
+                    msgpack_pack_true(&dbus_config->mp_pck);
+                }
+                else {
+                    msgpack_pack_false(&dbus_config->mp_pck);
+                }
+                break;
+            }
             default:
                 flb_error("[in_dbus] Unknown type '%c'",
                           dbus_message_iter_get_arg_type(&variant));
