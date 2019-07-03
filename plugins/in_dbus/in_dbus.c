@@ -151,15 +151,16 @@ static void in_dbus_log_dict(struct flb_in_dbus_config *dbus_config,
 
     /*  Count up arguments, and record this in the pack */
     unsigned count = 0;
-    dbus_message_iter_recurse(args, &dict);
-    while (dbus_message_iter_get_arg_type(&dict) != DBUS_TYPE_INVALID) {
-        count++;
-        dbus_message_iter_next(&dict);
-    }
+    for (dbus_message_iter_recurse(args, &dict);
+         dbus_message_iter_get_arg_type(&dict) != DBUS_TYPE_INVALID;
+         dbus_message_iter_next(&dict), count++);
     msgpack_pack_map(&dbus_config->mp_pck, count);
 
-    dbus_message_iter_recurse(args, &dict);
-    while (dbus_message_iter_get_arg_type(&dict) != DBUS_TYPE_INVALID) {
+    /*  Iterate over items in the map, packing each one */
+    for (dbus_message_iter_recurse(args, &dict);
+         dbus_message_iter_get_arg_type(&dict) != DBUS_TYPE_INVALID;
+         dbus_message_iter_next(&dict))
+    {
         DBusMessageIter entry;
         DBusMessageIter variant;
         char* key = "";
@@ -254,7 +255,6 @@ static void in_dbus_log_dict(struct flb_in_dbus_config *dbus_config,
                           dbus_message_iter_get_arg_type(&variant));
                 break;
         }
-        dbus_message_iter_next(&dict);
     }
     pthread_mutex_unlock(&dbus_config->mut);
 
