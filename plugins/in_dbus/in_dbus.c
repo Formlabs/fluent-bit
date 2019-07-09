@@ -34,6 +34,27 @@
 
 #include "in_dbus.h"
 
+int in_dbus_event_handler(void* data) {
+    DBusConnection* conn = ((struct mk_event*)data)->data;
+    dbus_connection_read_write_dispatch(conn, 100);
+    return 0;
+}
+
+dbus_bool_t in_dbus_add_watch(DBusWatch* watch, void* data)
+{
+    struct flb_in_dbus_config* dbus_config = data;
+    int fd = dbus_watch_get_unix_fd(watch);
+    mk_event_add(dbus_config->evl, fd, FLB_ENGINE_EV_CUSTOM, MK_EVENT_READ|MK_EVENT_WRITE,
+                 &dbus_config->event);
+    return true;
+}
+
+void in_dbus_remove_watch(DBusWatch* watch, void* data)
+{
+    struct flb_in_dbus_config* dbus_config = data;
+    mk_event_del(dbus_config->evl, &dbus_config->event);
+}
+
 /* cb_collect callback
  * This callback does very little work, because data is being accumulated
  * into the messagepack buffer by a worker thread. */
@@ -412,17 +433,12 @@ static bool in_dbus_install(struct flb_in_dbus_config *dbus_config)
     }
 
     if (!already_running) {
-        dbus_connection_ref(dbus_config->conn);
-        pthread_t thread_id;
-        if (pthread_create(&thread_id, NULL,
-                            in_dbus_worker, dbus_config->conn)) {
-            flb_error("[in_dbus] could not create worker thread");
-            UNLOCK_AND_EXIT(false);
-        }
-        if (pthread_detach(thread_id)) {
-            flb_error("[in_dbus] could not detach worker thread");
-            UNLOCK_AND_EXIT(false);
-        }
+        dbus_connection_set_watch_functions(dbus_config->conn,
+                in_dbus_add_watch,
+                in_dbus_remove_watch,
+                NULL,
+                dbus_config,
+                NULL);
     }
 
     UNLOCK_AND_EXIT(true);
@@ -507,6 +523,9 @@ static int in_dbus_init(struct flb_input_instance *in,
         return -1;
     }
     flb_input_set_context(in, dbus_config);
+    dbus_config->evl = config->evl;
+    dbus_config->event.handler = in_dbus_event_handler;
+    flb_info("[Got event %p", &dbus_config->event);
 
     /* Start the worker thread running */
     if (!in_dbus_install(dbus_config)) {
@@ -514,6 +533,8 @@ static int in_dbus_init(struct flb_input_instance *in,
         delete_dbus_config(dbus_config);
         return -1;
     }
+    flb_info("[in_dbus] got connection %p", dbus_config->conn);
+    dbus_config->event.data = dbus_config->conn;
 
     /*  Start the collector running */
     ret = flb_input_set_collector_time(in,

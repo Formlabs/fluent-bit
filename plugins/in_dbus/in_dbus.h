@@ -21,6 +21,7 @@
 #define FLB_IN_DBUS_H
 
 #include <fluent-bit/flb_input.h>
+#include <monkey/mk_core/mk_event.h>
 
 #include <msgpack.h>
 #include <pthread.h>
@@ -29,6 +30,10 @@ struct flb_in_dbus_config {
     /*  Populated during init and never changed */
     const char *dbus_object_path;
     int dbus_bus;
+
+    /*  Store a copy of the event loop */
+    struct mk_event_loop* evl;
+    struct mk_event event;
 
     /*  This mutex protects done and mp_sbuf, which are shared
      *  between the worker and main threads. */
