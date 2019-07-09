@@ -300,74 +300,132 @@ static void in_dbus_log_timestamped_data(
     in_dbus_log_dict(dbus_config, &out_time, msg, &args, conn);
 }
 
-static void* in_dbus_worker(void *in_context)
+static DBusHandlerResult in_dbus_vtable_message(DBusConnection *conn, DBusMessage *msg,
+                            void* user_data)
 {
-    struct flb_in_dbus_config *dbus_config = in_context;
-    DBusConnection* conn;
-    DBusMessage* msg;
-
     const char* iface = "com.fluent.fluentbit";
 
+    struct flb_in_dbus_config *dbus_config = user_data;
+    if (dbus_message_is_method_call(
+            msg, "org.freedesktop.DBus.Introspectable", "Introspect")) {
+        in_dbus_introspect(dbus_config, msg, conn);
+        return DBUS_HANDLER_RESULT_HANDLED;
+    }
+    else if (dbus_message_is_method_call(msg, iface, "LogData")) {
+        in_dbus_log_data(dbus_config, msg, conn);
+        return DBUS_HANDLER_RESULT_HANDLED;
+    }
+    else if (dbus_message_is_method_call(msg, iface, "LogTimestampedData")) {
+        in_dbus_log_timestamped_data(dbus_config, msg, conn);
+        return DBUS_HANDLER_RESULT_HANDLED;
+    }
+    return DBUS_HANDLER_RESULT_NOT_YET_HANDLED;
+}
+
+static DBusObjectPathVTable in_dbus_vtable = (DBusObjectPathVTable){
+    .message_function = in_dbus_vtable_message,
+};
+unsigned int in_dbus_instance_count = 0;
+static pthread_mutex_t dbus_lock = PTHREAD_MUTEX_INITIALIZER;
+
+/*
+ *  Detached worker thread, which never exits.
+ *
+ *  We only spawn one thread per DBus connection, and there will
+ *  only be one DBus connection in most cases (max two, if for
+ *  some reason we're connecting to both system and session buses).
+ */
+static void* in_dbus_worker(void *user_data)
+{
+    int current_instance_count = 0;
+    DBusConnection* conn = user_data;
+    do {
+        /* all work is done in object handlers */
+        pthread_mutex_lock(&dbus_lock);
+        dbus_connection_read_write_dispatch(conn, 100);
+        current_instance_count = in_dbus_instance_count;
+        pthread_mutex_unlock(&dbus_lock);
+
+        /* Sleep for 1 ms to let other threads claim the DBus lock */
+        struct timespec t;
+        t.tv_sec = 0;
+        t.tv_nsec = 1000000;
+        nanosleep(&t, NULL);
+    } while (current_instance_count);
+    flb_info("[in_dbus] DBus worker thread exiting");
+    return NULL;
+}
+
+static bool in_dbus_install(struct flb_in_dbus_config *dbus_config)
+{
     DBusError err;
     int ret;
+    bool already_running = false;
+
+    pthread_mutex_lock(&dbus_lock);
+    in_dbus_instance_count++;
+#define UNLOCK_AND_EXIT(v) do {             \
+        if (!v) {                           \
+            in_dbus_instance_count--;       \
+        }                                   \
+        pthread_mutex_unlock(&dbus_lock);   \
+        return v;                           \
+    } while (0)
 
     dbus_error_init(&err);
-    conn = dbus_bus_get(dbus_config->dbus_bus, &err);
+    dbus_config->conn = dbus_bus_get(dbus_config->dbus_bus, &err);
     if (dbus_error_is_set(&err)) {
         flb_error("[in_dbus] DBus connection Error (%s)", err.message);
         dbus_error_free(&err);
+        UNLOCK_AND_EXIT(false);
     }
-    if (NULL == conn) {
+    if (NULL == dbus_config->conn) {
         flb_error("[in_dbus] DBus error: connection is NULL");
-        return NULL;
+        UNLOCK_AND_EXIT(false);
     }
+    dbus_connection_set_exit_on_disconnect(dbus_config->conn, false);
 
     /* request our name on the bus and check for errors */
-    ret = dbus_bus_request_name(conn, dbus_config->dbus_name,
+    ret = dbus_bus_request_name(dbus_config->conn, "com.fluent.fluentbit",
                                 DBUS_NAME_FLAG_REPLACE_EXISTING, &err);
     if (dbus_error_is_set(&err)) {
         flb_error("[in_dbus] DBus name error (%s)", err.message);
         dbus_error_free(&err);
+        UNLOCK_AND_EXIT(false);
     }
-    if (DBUS_REQUEST_NAME_REPLY_PRIMARY_OWNER != ret) {
-        flb_error("[in_dbus] DBus error: not Primary Owner (%d)\n", ret);
-        return NULL;
+    else if (ret == DBUS_REQUEST_NAME_REPLY_ALREADY_OWNER) {
+        already_running = true;
     }
-
-    while (true) {
-        /* check for cancellation */
-        pthread_mutex_lock(&dbus_config->mut);
-        if (dbus_config->done) {
-            pthread_mutex_unlock(&dbus_config->mut);
-            break;
-        }
-        pthread_mutex_unlock(&dbus_config->mut);
-
-        /* non blocking read of the next available message */
-        dbus_connection_read_write(conn, 100);
-        msg = dbus_connection_pop_message(conn);
-
-        /* loop again if we haven't got a message */
-        if (NULL == msg) {
-            continue;
-        }
-
-        if (dbus_message_is_method_call(
-                msg, "org.freedesktop.DBus.Introspectable", "Introspect")) {
-            in_dbus_introspect(dbus_config, msg, conn);
-        }
-        else if (dbus_message_is_method_call(msg, iface, "LogData")) {
-            in_dbus_log_data(dbus_config, msg, conn);
-        }
-        else if (dbus_message_is_method_call(msg, iface, "LogTimestampedData")) {
-            in_dbus_log_timestamped_data(dbus_config, msg, conn);
-        }
-
-        dbus_message_unref(msg);
+    else if (DBUS_REQUEST_NAME_REPLY_PRIMARY_OWNER != ret) {
+        flb_error("[in_dbus] DBus error: not Primary Owner (%d)", ret);
+        UNLOCK_AND_EXIT(false);
     }
 
-    dbus_connection_unref(conn);
-    return NULL;
+    if (!dbus_connection_register_object_path(
+            dbus_config->conn,
+            dbus_config->dbus_object_path,
+            &in_dbus_vtable,
+            dbus_config)) {
+        flb_error("[in_dbus] Could not claim object path %s",
+                  dbus_config->dbus_object_path);
+        UNLOCK_AND_EXIT(false);
+    }
+
+    if (!already_running) {
+        dbus_connection_ref(dbus_config->conn);
+        pthread_t thread_id;
+        if (pthread_create(&thread_id, NULL,
+                            in_dbus_worker, dbus_config->conn)) {
+            flb_error("[in_dbus] could not create worker thread");
+            UNLOCK_AND_EXIT(false);
+        }
+        if (pthread_detach(thread_id)) {
+            flb_error("[in_dbus] could not detach worker thread");
+            UNLOCK_AND_EXIT(false);
+        }
+    }
+
+    UNLOCK_AND_EXIT(true);
 }
 
 /* read config file and*/
@@ -376,12 +434,12 @@ static int in_dbus_config_read(struct flb_in_dbus_config *dbus_config,
 {
     const char *str = NULL;
 
-    str = flb_input_get_property("dbus_name", in);
+    str = flb_input_get_property("dbus_objectpath", in);
     if (str == NULL) {
-        str = "com.fluent.fluentbit";
-        flb_trace("[in_dbus] 'dbus_name' not found, using default %s", str);
+        flb_error("[in_dbus] Missing DBus_ObjectPath");
+        return -1;
     }
-    dbus_config->dbus_name = str;
+    dbus_config->dbus_object_path = str;
 
     str = flb_input_get_property("dbus_bus", in);
     if (str == NULL) {
@@ -408,6 +466,15 @@ static int in_dbus_config_read(struct flb_in_dbus_config *dbus_config,
 static void delete_dbus_config(struct flb_in_dbus_config *dbus_config)
 {
     if (dbus_config) {
+        if (dbus_config->conn) {
+            pthread_mutex_lock(&dbus_lock);
+            dbus_connection_unregister_object_path(
+                dbus_config->conn,
+                dbus_config->dbus_object_path);
+            in_dbus_instance_count--;
+            pthread_mutex_unlock(&dbus_lock);
+        }
+
         pthread_mutex_destroy(&dbus_config->mut);
         msgpack_sbuffer_free(dbus_config->mp_sbuf);
         flb_free(dbus_config);
@@ -442,9 +509,8 @@ static int in_dbus_init(struct flb_input_instance *in,
     flb_input_set_context(in, dbus_config);
 
     /* Start the worker thread running */
-    if (pthread_create(&dbus_config->worker, NULL,
-                       in_dbus_worker, dbus_config)) {
-        flb_error("[in_dbus] could not create worker thread");
+    if (!in_dbus_install(dbus_config)) {
+        flb_error("[in_dbus] could not install DBus system");
         delete_dbus_config(dbus_config);
         return -1;
     }
@@ -466,14 +532,6 @@ static int in_dbus_exit(void *data, struct flb_config *config)
 {
     (void) *config;
     struct flb_in_dbus_config *dbus_config = data;
-
-    /* Ask for the worker thread to shut down */
-    pthread_mutex_lock(&dbus_config->mut);
-    dbus_config->done = true;
-    pthread_mutex_unlock(&dbus_config->mut);
-
-    /* Join the worker thread, then clean up */
-    pthread_join(dbus_config->worker, NULL);
 
     delete_dbus_config(dbus_config);
     return 0;

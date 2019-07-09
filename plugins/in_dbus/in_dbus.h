@@ -27,18 +27,17 @@
 
 struct flb_in_dbus_config {
     /*  Populated during init and never changed */
-    const char *dbus_name;
+    const char *dbus_object_path;
     int dbus_bus;
 
     /*  This mutex protects done and mp_sbuf, which are shared
      *  between the worker and main threads. */
     pthread_mutex_t mut;
-    bool done;
     msgpack_sbuffer* mp_sbuf;
 
     /*  Everything below here is maintained by the worker */
-    pthread_t worker;
     msgpack_packer mp_pck;
+    DBusConnection* conn;
 };
 
 extern struct flb_input_plugin in_dbus_plugin;
