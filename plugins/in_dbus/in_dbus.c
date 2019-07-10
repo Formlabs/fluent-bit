@@ -34,25 +34,101 @@
 
 #include "in_dbus.h"
 
+struct in_dbus_event {
+    struct mk_event event;
+    struct mk_event_loop* evl;
+    DBusConnection* conn;
+    void* extra;
+};
+
+int in_dbus_timeout_handler(void* data) {
+    flb_info("timeout handler");
+    struct in_dbus_event* event = data;
+    DBusTimeout *t = event->extra;
+    dbus_timeout_handle(t);
+    flb_info("done with timeout handler");
+    return 0;
+}
+
+dbus_bool_t in_dbus_add_timeout(DBusTimeout* timeout, void* data) {
+    struct in_dbus_event* event = data;
+    event->extra = timeout;
+    uint64_t timeout_ns = dbus_timeout_get_interval(timeout) * 1000000;
+    mk_event_timeout_create(event->evl, timeout_ns / 1000000000,
+                            timeout_ns % 1000000000, data);
+
+    flb_info("added timeout");
+    return true;
+}
+
+void in_dbus_remove_timeout(DBusTimeout* timeout, void* data) {
+    struct in_dbus_event* event = data;
+    mk_event_timeout_destroy(event->evl, data);
+
+    flb_info("destroyed timeout");
+}
+
+void in_dbus_toggle_timeout(DBusTimeout* timeout, void* data) {
+    flb_info("Toggle timeout");
+    if (dbus_timeout_get_enabled(timeout)) {
+        in_dbus_remove_timeout(timeout, data);
+    } else {
+        in_dbus_add_timeout(timeout, data);
+    }
+}
+
+
 int in_dbus_event_handler(void* data) {
-    DBusConnection* conn = ((struct mk_event*)data)->data;
-    dbus_connection_read_write_dispatch(conn, 100);
+    struct in_dbus_event* event = data;
+    DBusWatch *w = event->extra;
+    flb_info("event handler %i", dbus_watch_get_flags(w));
+    if (!dbus_watch_handle(w, dbus_watch_get_flags(w))) {
+        flb_error("[in_dbus] dbus_watch_handle failed");
+    }
+    flb_info("done with event handler");
+
+
+    while (dbus_connection_get_dispatch_status(event->conn) ==
+           DBUS_DISPATCH_DATA_REMAINS) {
+        dbus_connection_dispatch(event->conn);
+    }
     return 0;
 }
 
 dbus_bool_t in_dbus_add_watch(DBusWatch* watch, void* data)
 {
-    struct flb_in_dbus_config* dbus_config = data;
+    struct in_dbus_event* event = data;
+    event->extra = watch;
+    unsigned flags = dbus_watch_get_flags(watch);
+    flb_info("adding watch %u", flags);
     int fd = dbus_watch_get_unix_fd(watch);
-    mk_event_add(dbus_config->evl, fd, FLB_ENGINE_EV_CUSTOM, MK_EVENT_READ|MK_EVENT_WRITE,
-                 &dbus_config->event);
+    unsigned mk_flags = 0;
+    if (flags & DBUS_WATCH_READABLE) {
+        mk_flags |= MK_EVENT_READ;
+    }
+    if (flags & DBUS_WATCH_WRITABLE) {
+        mk_flags |= MK_EVENT_WRITE;
+    }
+
+    mk_event_add(event->evl, fd, FLB_ENGINE_EV_CUSTOM, mk_flags, data);
     return true;
 }
 
 void in_dbus_remove_watch(DBusWatch* watch, void* data)
 {
-    struct flb_in_dbus_config* dbus_config = data;
-    mk_event_del(dbus_config->evl, &dbus_config->event);
+    flb_info("removing watch");
+    struct in_dbus_event* event = data;
+    mk_event_del(event->evl, data);
+}
+
+void in_dbus_toggle_watch(DBusWatch* watch, void* data)
+{
+    flb_info("Toggle watch");
+    if (dbus_watch_get_enabled(watch)) {
+        in_dbus_remove_watch(watch, data);
+    } else {
+        in_dbus_add_watch(watch, data);
+    }
 }
 
 /* cb_collect callback
@@ -65,16 +141,13 @@ static int in_dbus_collect(struct flb_input_instance *i_ins,
     msgpack_sbuffer* mp_sbuf;
 
     /* If there's no data available, then return right away */
-    pthread_mutex_lock(&dbus_config->mut);
     if (dbus_config->mp_sbuf == NULL) {
-        pthread_mutex_unlock(&dbus_config->mut);
         return 0;
     }
 
     /* Steal the messagepack buffer then release the lock */
     mp_sbuf = dbus_config->mp_sbuf;
     dbus_config->mp_sbuf = NULL;
-    pthread_mutex_unlock(&dbus_config->mut);
 
     /* Write the data from the buffer, then free it */
     flb_input_chunk_append_raw(i_ins, NULL, 0,
@@ -159,7 +232,6 @@ static void in_dbus_log_dict(struct flb_in_dbus_config *dbus_config,
 
 
     /*  Initialize the msgpack buffer if it's empty */
-    pthread_mutex_lock(&dbus_config->mut);
     if (dbus_config->mp_sbuf == NULL) {
         dbus_config->mp_sbuf = msgpack_sbuffer_new();
         msgpack_packer_init(&dbus_config->mp_pck, dbus_config->mp_sbuf,
@@ -256,7 +328,6 @@ static void in_dbus_log_dict(struct flb_in_dbus_config *dbus_config,
                 break;
         }
     }
-    pthread_mutex_unlock(&dbus_config->mut);
 
     /*  Send a DBus reply */
     reply = dbus_message_new_method_return(msg);
@@ -324,6 +395,7 @@ static void in_dbus_log_timestamped_data(
 static DBusHandlerResult in_dbus_vtable_message(DBusConnection *conn, DBusMessage *msg,
                             void* user_data)
 {
+    flb_info("Handling message");
     const char* iface = "com.fluent.fluentbit";
 
     struct flb_in_dbus_config *dbus_config = user_data;
@@ -346,63 +418,24 @@ static DBusHandlerResult in_dbus_vtable_message(DBusConnection *conn, DBusMessag
 static DBusObjectPathVTable in_dbus_vtable = (DBusObjectPathVTable){
     .message_function = in_dbus_vtable_message,
 };
-unsigned int in_dbus_instance_count = 0;
-static pthread_mutex_t dbus_lock = PTHREAD_MUTEX_INITIALIZER;
 
-/*
- *  Detached worker thread, which never exits.
- *
- *  We only spawn one thread per DBus connection, and there will
- *  only be one DBus connection in most cases (max two, if for
- *  some reason we're connecting to both system and session buses).
- */
-static void* in_dbus_worker(void *user_data)
-{
-    int current_instance_count = 0;
-    DBusConnection* conn = user_data;
-    do {
-        /* all work is done in object handlers */
-        pthread_mutex_lock(&dbus_lock);
-        dbus_connection_read_write_dispatch(conn, 100);
-        current_instance_count = in_dbus_instance_count;
-        pthread_mutex_unlock(&dbus_lock);
-
-        /* Sleep for 1 ms to let other threads claim the DBus lock */
-        struct timespec t;
-        t.tv_sec = 0;
-        t.tv_nsec = 1000000;
-        nanosleep(&t, NULL);
-    } while (current_instance_count);
-    flb_info("[in_dbus] DBus worker thread exiting");
-    return NULL;
-}
-
-static bool in_dbus_install(struct flb_in_dbus_config *dbus_config)
+static bool in_dbus_install(struct flb_config *config,
+                            struct flb_in_dbus_config *dbus_config)
 {
     DBusError err;
     int ret;
     bool already_running = false;
-
-    pthread_mutex_lock(&dbus_lock);
-    in_dbus_instance_count++;
-#define UNLOCK_AND_EXIT(v) do {             \
-        if (!v) {                           \
-            in_dbus_instance_count--;       \
-        }                                   \
-        pthread_mutex_unlock(&dbus_lock);   \
-        return v;                           \
-    } while (0)
 
     dbus_error_init(&err);
     dbus_config->conn = dbus_bus_get(dbus_config->dbus_bus, &err);
     if (dbus_error_is_set(&err)) {
         flb_error("[in_dbus] DBus connection Error (%s)", err.message);
         dbus_error_free(&err);
-        UNLOCK_AND_EXIT(false);
+        return false;
     }
     if (NULL == dbus_config->conn) {
         flb_error("[in_dbus] DBus error: connection is NULL");
-        UNLOCK_AND_EXIT(false);
+        return false;
     }
     dbus_connection_set_exit_on_disconnect(dbus_config->conn, false);
 
@@ -412,14 +445,14 @@ static bool in_dbus_install(struct flb_in_dbus_config *dbus_config)
     if (dbus_error_is_set(&err)) {
         flb_error("[in_dbus] DBus name error (%s)", err.message);
         dbus_error_free(&err);
-        UNLOCK_AND_EXIT(false);
+        return false;
     }
     else if (ret == DBUS_REQUEST_NAME_REPLY_ALREADY_OWNER) {
         already_running = true;
     }
     else if (DBUS_REQUEST_NAME_REPLY_PRIMARY_OWNER != ret) {
         flb_error("[in_dbus] DBus error: not Primary Owner (%d)", ret);
-        UNLOCK_AND_EXIT(false);
+        return false;
     }
 
     if (!dbus_connection_register_object_path(
@@ -429,19 +462,36 @@ static bool in_dbus_install(struct flb_in_dbus_config *dbus_config)
             dbus_config)) {
         flb_error("[in_dbus] Could not claim object path %s",
                   dbus_config->dbus_object_path);
-        UNLOCK_AND_EXIT(false);
+        return false;
     }
 
     if (!already_running) {
+        struct in_dbus_event* event;
+
+        event = flb_calloc(1, sizeof(*event));
+        event->evl = config->evl;
+        event->event.handler = in_dbus_event_handler;
+        event->conn = dbus_config->conn;
         dbus_connection_set_watch_functions(dbus_config->conn,
                 in_dbus_add_watch,
                 in_dbus_remove_watch,
-                NULL,
-                dbus_config,
+                in_dbus_toggle_watch,
+                event,
+                NULL);
+
+        event = flb_calloc(1, sizeof(*event));
+        event->evl = config->evl;
+        event->event.handler = in_dbus_timeout_handler;
+        event->conn = dbus_config->conn;
+        dbus_connection_set_timeout_functions(dbus_config->conn,
+                in_dbus_add_timeout,
+                in_dbus_remove_timeout,
+                in_dbus_toggle_timeout,
+                event,
                 NULL);
     }
 
-    UNLOCK_AND_EXIT(true);
+    return true;
 }
 
 /* read config file and*/
@@ -483,15 +533,11 @@ static void delete_dbus_config(struct flb_in_dbus_config *dbus_config)
 {
     if (dbus_config) {
         if (dbus_config->conn) {
-            pthread_mutex_lock(&dbus_lock);
             dbus_connection_unregister_object_path(
                 dbus_config->conn,
                 dbus_config->dbus_object_path);
-            in_dbus_instance_count--;
-            pthread_mutex_unlock(&dbus_lock);
         }
 
-        pthread_mutex_destroy(&dbus_config->mut);
         msgpack_sbuffer_free(dbus_config->mp_sbuf);
         flb_free(dbus_config);
     }
@@ -510,12 +556,6 @@ static int in_dbus_init(struct flb_input_instance *in,
         return -1;
     }
 
-    if (pthread_mutex_init(&dbus_config->mut, NULL)) {
-        flb_error("[in_dbus] could not create mutex");
-        flb_free(dbus_config);
-        return -1;
-    }
-
     /* Initialize dbus config */
     ret = in_dbus_config_read(dbus_config, in);
     if (ret < 0) {
@@ -523,18 +563,13 @@ static int in_dbus_init(struct flb_input_instance *in,
         return -1;
     }
     flb_input_set_context(in, dbus_config);
-    dbus_config->evl = config->evl;
-    dbus_config->event.handler = in_dbus_event_handler;
-    flb_info("[Got event %p", &dbus_config->event);
 
     /* Start the worker thread running */
-    if (!in_dbus_install(dbus_config)) {
+    if (!in_dbus_install(config, dbus_config)) {
         flb_error("[in_dbus] could not install DBus system");
         delete_dbus_config(dbus_config);
         return -1;
     }
-    flb_info("[in_dbus] got connection %p", dbus_config->conn);
-    dbus_config->event.data = dbus_config->conn;
 
     /*  Start the collector running */
     ret = flb_input_set_collector_time(in,
