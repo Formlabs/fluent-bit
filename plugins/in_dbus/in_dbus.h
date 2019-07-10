@@ -30,10 +30,9 @@ struct flb_in_dbus_config {
     /* DBUS_BUS_[SYSTEM|SESSION] */
     int dbus_bus;
 
-    msgpack_sbuffer* mp_sbuf;
-
-    /*  Everything below here is maintained by the worker */
+    msgpack_sbuffer mp_sbuf;
     msgpack_packer mp_pck;
+
     DBusConnection* conn;
 };
 

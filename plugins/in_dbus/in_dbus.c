@@ -85,21 +85,17 @@ static int in_dbus_collect(struct flb_input_instance *i_ins,
                            struct flb_config *config, void *in_context)
 {
     struct flb_in_dbus_config *dbus_config = in_context;
-    msgpack_sbuffer* mp_sbuf;
 
     /* If there's no data available, then return right away */
-    if (dbus_config->mp_sbuf == NULL) {
+    if (dbus_config->mp_sbuf.size == 0) {
         return 0;
     }
 
-    /* Steal the messagepack buffer then release the lock */
-    mp_sbuf = dbus_config->mp_sbuf;
-    dbus_config->mp_sbuf = NULL;
-
     /* Write the data from the buffer, then free it */
     flb_input_chunk_append_raw(i_ins, NULL, 0,
-                               mp_sbuf->data, mp_sbuf->size);
-    msgpack_sbuffer_free(mp_sbuf);
+                               dbus_config->mp_sbuf.data,
+                               dbus_config->mp_sbuf.size);
+    msgpack_sbuffer_clear(&dbus_config->mp_sbuf);
 
     return 0;
 }
@@ -175,14 +171,6 @@ static void in_dbus_log_dict(struct flb_in_dbus_config *dbus_config,
         flb_error("[in_dbus] Message is not a dictionary");
         in_dbus_reply_error(msg, conn, "Method call has invalid arguments");
         return;
-    }
-
-
-    /*  Initialize the msgpack buffer if it's empty */
-    if (dbus_config->mp_sbuf == NULL) {
-        dbus_config->mp_sbuf = msgpack_sbuffer_new();
-        msgpack_packer_init(&dbus_config->mp_pck, dbus_config->mp_sbuf,
-                            msgpack_sbuffer_write);
     }
 
     /*  Write the time for this sample */
@@ -472,8 +460,7 @@ static void delete_dbus_config(struct flb_in_dbus_config *dbus_config)
                 dbus_config->conn,
                 dbus_config->dbus_object_path);
         }
-
-        msgpack_sbuffer_free(dbus_config->mp_sbuf);
+        msgpack_sbuffer_destroy(&dbus_config->mp_sbuf);
         flb_free(dbus_config);
     }
 }
@@ -490,6 +477,11 @@ static int in_dbus_init(struct flb_input_instance *in,
     if (dbus_config == NULL) {
         return -1;
     }
+
+    /* Set up the messagepack buffer and writer */
+    msgpack_sbuffer_init(&dbus_config->mp_sbuf);
+    msgpack_packer_init(&dbus_config->mp_pck, &dbus_config->mp_sbuf,
+                        msgpack_sbuffer_write);
 
     /* Initialize dbus config */
     ret = in_dbus_config_read(dbus_config, in);
