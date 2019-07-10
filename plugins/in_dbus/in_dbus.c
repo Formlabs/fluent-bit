@@ -38,55 +38,15 @@ struct in_dbus_event {
     struct mk_event event;
     struct mk_event_loop* evl;
     DBusConnection* conn;
-    void* extra;
+    DBusWatch* watch;
 };
-
-int in_dbus_timeout_handler(void* data) {
-    flb_info("timeout handler");
-    struct in_dbus_event* event = data;
-    DBusTimeout *t = event->extra;
-    dbus_timeout_handle(t);
-    flb_info("done with timeout handler");
-    return 0;
-}
-
-dbus_bool_t in_dbus_add_timeout(DBusTimeout* timeout, void* data) {
-    struct in_dbus_event* event = data;
-    event->extra = timeout;
-    uint64_t timeout_ns = dbus_timeout_get_interval(timeout) * 1000000;
-    mk_event_timeout_create(event->evl, timeout_ns / 1000000000,
-                            timeout_ns % 1000000000, data);
-
-    flb_info("added timeout");
-    return true;
-}
-
-void in_dbus_remove_timeout(DBusTimeout* timeout, void* data) {
-    struct in_dbus_event* event = data;
-    mk_event_timeout_destroy(event->evl, data);
-
-    flb_info("destroyed timeout");
-}
-
-void in_dbus_toggle_timeout(DBusTimeout* timeout, void* data) {
-    flb_info("Toggle timeout");
-    if (dbus_timeout_get_enabled(timeout)) {
-        in_dbus_remove_timeout(timeout, data);
-    } else {
-        in_dbus_add_timeout(timeout, data);
-    }
-}
-
 
 int in_dbus_event_handler(void* data) {
     struct in_dbus_event* event = data;
-    DBusWatch *w = event->extra;
-    flb_info("event handler %i", dbus_watch_get_flags(w));
-    if (!dbus_watch_handle(w, dbus_watch_get_flags(w))) {
+    const unsigned flags = dbus_watch_get_flags(event->watch);
+    if (!dbus_watch_handle(event->watch, flags)) {
         flb_error("[in_dbus] dbus_watch_handle failed");
     }
-    flb_info("done with event handler");
-
 
     while (dbus_connection_get_dispatch_status(event->conn) ==
            DBUS_DISPATCH_DATA_REMAINS) {
@@ -98,10 +58,8 @@ int in_dbus_event_handler(void* data) {
 dbus_bool_t in_dbus_add_watch(DBusWatch* watch, void* data)
 {
     struct in_dbus_event* event = data;
-    event->extra = watch;
-    unsigned flags = dbus_watch_get_flags(watch);
-    flb_info("adding watch %u", flags);
-    int fd = dbus_watch_get_unix_fd(watch);
+    const unsigned flags = dbus_watch_get_flags(watch);
+    const int fd = dbus_watch_get_unix_fd(watch);
     unsigned mk_flags = 0;
     if (flags & DBUS_WATCH_READABLE) {
         mk_flags |= MK_EVENT_READ;
@@ -109,31 +67,20 @@ dbus_bool_t in_dbus_add_watch(DBusWatch* watch, void* data)
     if (flags & DBUS_WATCH_WRITABLE) {
         mk_flags |= MK_EVENT_WRITE;
     }
-
+    event->watch = watch;
     mk_event_add(event->evl, fd, FLB_ENGINE_EV_CUSTOM, mk_flags, data);
     return true;
 }
 
 void in_dbus_remove_watch(DBusWatch* watch, void* data)
 {
-    flb_info("removing watch");
     struct in_dbus_event* event = data;
     mk_event_del(event->evl, data);
 }
 
-void in_dbus_toggle_watch(DBusWatch* watch, void* data)
-{
-    flb_info("Toggle watch");
-    if (dbus_watch_get_enabled(watch)) {
-        in_dbus_remove_watch(watch, data);
-    } else {
-        in_dbus_add_watch(watch, data);
-    }
-}
-
 /* cb_collect callback
  * This callback does very little work, because data is being accumulated
- * into the messagepack buffer by a worker thread. */
+ * into the messagepack buffer by a separate task. */
 static int in_dbus_collect(struct flb_input_instance *i_ins,
                            struct flb_config *config, void *in_context)
 {
@@ -395,7 +342,6 @@ static void in_dbus_log_timestamped_data(
 static DBusHandlerResult in_dbus_vtable_message(DBusConnection *conn, DBusMessage *msg,
                             void* user_data)
 {
-    flb_info("Handling message");
     const char* iface = "com.fluent.fluentbit";
 
     struct flb_in_dbus_config *dbus_config = user_data;
@@ -475,18 +421,7 @@ static bool in_dbus_install(struct flb_config *config,
         dbus_connection_set_watch_functions(dbus_config->conn,
                 in_dbus_add_watch,
                 in_dbus_remove_watch,
-                in_dbus_toggle_watch,
-                event,
-                NULL);
-
-        event = flb_calloc(1, sizeof(*event));
-        event->evl = config->evl;
-        event->event.handler = in_dbus_timeout_handler;
-        event->conn = dbus_config->conn;
-        dbus_connection_set_timeout_functions(dbus_config->conn,
-                in_dbus_add_timeout,
-                in_dbus_remove_timeout,
-                in_dbus_toggle_timeout,
+                NULL,
                 event,
                 NULL);
     }
