@@ -85,17 +85,12 @@ static int in_dbus_collect(struct flb_input_instance *i_ins,
                            struct flb_config *config, void *in_context)
 {
     struct flb_in_dbus_config *dbus_config = in_context;
-
-    /* If there's no data available, then return right away */
-    if (dbus_config->mp_sbuf.size == 0) {
-        return 0;
+    if (dbus_config->mp_sbuf.size != 0) {
+        flb_input_chunk_append_raw(i_ins, NULL, 0,
+                                   dbus_config->mp_sbuf.data,
+                                   dbus_config->mp_sbuf.size);
+        msgpack_sbuffer_clear(&dbus_config->mp_sbuf);
     }
-
-    /* Write the data from the buffer, then free it */
-    flb_input_chunk_append_raw(i_ins, NULL, 0,
-                               dbus_config->mp_sbuf.data,
-                               dbus_config->mp_sbuf.size);
-    msgpack_sbuffer_clear(&dbus_config->mp_sbuf);
 
     return 0;
 }
